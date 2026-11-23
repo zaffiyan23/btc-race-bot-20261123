@@ -28,7 +28,7 @@
 //
 //   TP1 — SELL 50% AT THE ANCHOR ZONE. When the close recovers to the
 //   anchor zone (within 0.10% under the anchor), half the position is
-//   sold. That banks the dip: the rungs were 0.70–1.70% under the
+//   sold. That banks the dip: the rungs were 1.59–4.03% under the
 //   anchor, so a recovery to the anchor pays roughly that spread on
 //   the half sold, minus costs.
 //
@@ -45,17 +45,14 @@
 //   at that moment — profits compound into the next cycle. It repeats
 //   until the window closes. No new buys in the last 30 bars.
 //
-// Parameters, derived from today's tape (2026-11-23, Binance Vision
-// BTCUSDT, checked before the build): BTC $61,451, +3.85% in 24 h
-// after a dip to $59,026; 1-minute return sd 7.3 bps, 15-minute sd
-// 26.9 bps, mean 1-hour range ~0.96% over the last day. The dev
-// window of this race has 1-minute sd 8.1 bps and a maximum drawdown
-// of 1.98% from a running peak, so rungs must live inside ~2%:
-//   rung 1 at -0.70% (~2.6x the 15-minute sd: a real pullback, not
-//     one-bar noise),
-//   rung 2 at -1.20%, rung 3 at -1.70% (0.50% spacing, about half a
-//     typical 1-hour range per step).
-// The peak-reader distance 0.35% sits just above the 15-minute noise
+// Parameters. Market check before the build (2026-11-23, Binance
+// Vision BTCUSDT): BTC $61,451, +3.85% in 24 h after a dip to
+// $59,026; 1-minute return sd 7.3 bps, 15-minute sd 26.9 bps, mean
+// 1-hour range ~0.96% over the last day. The rung depths were then
+// set by the owner's binding decision (13:53 WIB, BTC $61,480):
+// entries only inside the $59,000–$60,500 dip zone, spread evenly
+// across it — see the ladder constants below for the mapping. The
+// peak-reader distance 0.35% sits just above the 15-minute noise
 // (26.9 bps) so ordinary chop does not trigger it, and the owner's
 // earlier backtest found tighter peak distances (0.3%) beat wider
 // ones (0.8%) on the race tape they were measured on.
@@ -68,9 +65,19 @@ import { runBars, type BarsState, type Batch, type OrderInput } from './vendor/m
 const SYMBOL = 'CBBTC';
 
 /* ---- ladder (fractions below the cycle anchor) ---- */
-const RUNG1 = 0.0070;
-const RUNG2 = 0.0120;
-const RUNG3 = 0.0170;
+/* Owner's binding decision, 2026-11-23 13:53 WIB: the ladder lives in
+ * the $59,000–$60,500 dip zone, NOT up at the current price. BTC was
+ * $61,480 when the decision was made (13:49 WIB check; refreshed at
+ * $61,516 just before these numbers were locked, 24 h range
+ * $59,026–$61,960, +3.97%). The three rungs spread evenly across the
+ * zone — $60,500 / $59,750 / $59,000 — expressed as depths below the
+ * cycle anchor so the blueprint's anchor/loop mechanics still hold:
+ *   rung 1: 1 − 60,500/61,480 = 1.594% below the anchor
+ *   rung 2: 1 − 59,750/61,480 = 2.814% below the anchor
+ *   rung 3: 1 − 59,000/61,480 = 4.034% below the anchor          */
+const RUNG1 = 0.01594;
+const RUNG2 = 0.02814;
+const RUNG3 = 0.04034;
 /** Rung sizes, as % of the cycle budget: 30 / 50 / 20. */
 const RUNG_PCTS: readonly number[] = [30, 50, 20];
 const RUNGS: readonly number[] = [RUNG1, RUNG2, RUNG3];
