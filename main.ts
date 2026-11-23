@@ -33,12 +33,11 @@
 //   the half sold, minus costs.
 //
 //   TP2 — PEAK READER FOR THE REST. The remaining half is held for
-//   more. Once the close has pushed at least 0.30% above the anchor
-//   (the latch), the bot tracks the highest close from there; when the
-//   close falls 0.35% under that peak, it sells everything left. The
-//   latch matters: without it the peak reader would fire on the first
-//   wiggle and dump the position near the bottom (measured in the
-//   owner's 2026-11-18 backtests).
+//   more. The bot tracks the highest close from the moment the entry
+//   filled; when the close falls $100 under that running peak, it
+//   sells everything left (owner's decision, 2026-11-23 13:54 WIB:
+//   the peak-read distance is $100, replacing the earlier percentage
+//   latch design).
 //
 //   LOOP. After TP2 the bot rests for a 30-bar cooldown, then goes
 //   idle again with a fresh anchor and a budget equal to its equity
@@ -52,10 +51,9 @@
 // set by the owner's binding decision (13:53 WIB, BTC $61,480):
 // entries only inside the $59,000–$60,500 dip zone, spread evenly
 // across it — see the ladder constants below for the mapping. The
-// peak-reader distance 0.35% sits just above the 15-minute noise
-// (26.9 bps) so ordinary chop does not trigger it, and the owner's
-// earlier backtest found tighter peak distances (0.3%) beat wider
-// ones (0.8%) on the race tape they were measured on.
+// peak-read distance is the owner's $100 (decision 13:54 WIB), an
+// absolute price distance applied to the highest close since the
+// entry filled.
 //
 // All state comes from the bars: no clock, no randomness, no files,
 // no network — two runs over the same window agree byte for byte.
@@ -95,11 +93,11 @@ const BOTTOM_WAIT_MAX = 180;
 /* ---- exits ---- */
 /** TP1 zone: this close to the anchor, from below, counts as back. */
 const TP1_ZONE = 0.0010;
-/** TP2 latch: the close must first push this far above the anchor. */
-const TP2_LATCH_ABOVE_ANCHOR = 0.0030;
-/** TP2: sell the rest when the close falls this far under the peak
- * tracked since the latch. */
-const PEAK_DROP = 0.0035;
+/** TP2 peak-read distance, in USDC of price (owner's decision,
+ * 2026-11-23 13:54 WIB): the bot tracks the highest close since the
+ * entry filled, and the peak leg sells everything left as soon as
+ * the close falls $100 under that running peak. */
+const PEAK_DROP_USD = 100;
 
 /* ---- loop ---- */
 /** Bars of rest after a completed cycle before watching again. */
@@ -134,8 +132,9 @@ let avgEntry = 0;
 let entryBar = -1;
 /** TP1 has sold its half. */
 let tp1Done = false;
-/** Highest close since TP1 (the peak reader's raw material). */
-let peakAfterTp1 = 0;
+/** Highest close since the cycle's entry filled (the peak reader's
+ * raw material, tracked from the first bar in the position). */
+let peakSinceEntry = 0;
 /** WAIT_BOTTOM: the lowest close tracked since the gap bar, and when
  * the wait began. */
 let dipLow = 0;
@@ -192,7 +191,7 @@ await runBars({
         cycleAnchor = 0;
         rungsFilled = 0;
         tp1Done = false;
-        peakAfterTp1 = 0;
+        peakSinceEntry = 0;
         avgEntry = 0;
       }
       return [];
@@ -208,11 +207,12 @@ await runBars({
         cooldownUntil = scoredBar + COOLDOWN_BARS;
         return [];
       }
+      // The peak reader watches from the moment the entry fills.
+      if (close > peakSinceEntry) peakSinceEntry = close;
       // TP1: recovery to the anchor zone sells half.
       if (!tp1Done) {
         if (close >= cycleAnchor * (1 - TP1_ZONE) && close > avgEntry) {
           tp1Done = true;
-          peakAfterTp1 = close;
           const half = qty / 2n;
           if (half > 0n) {
             return [{ side: 'sell', symbol: SYMBOL, qty: half, max_slippage_bps: MAX_SLIPPAGE_BPS }];
@@ -230,10 +230,9 @@ await runBars({
         }
         return [];
       }
-      // TP2: peak reader on the remaining half.
-      if (close > peakAfterTp1) peakAfterTp1 = close;
-      const latched = peakAfterTp1 >= cycleAnchor * (1 + TP2_LATCH_ABOVE_ANCHOR);
-      if (latched && close <= peakAfterTp1 * (1 - PEAK_DROP)) {
+      // TP2: peak reader on the remaining half — sell it all when
+      // the close falls $100 under the highest close since entry.
+      if (peakSinceEntry > 0 && close <= peakSinceEntry - PEAK_DROP_USD) {
         phase = 'COOLDOWN';
         cooldownUntil = scoredBar + COOLDOWN_BARS;
         return [{ side: 'sell', symbol: SYMBOL, qty, max_slippage_bps: MAX_SLIPPAGE_BPS }];
