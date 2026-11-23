@@ -102,6 +102,13 @@ const LATE_CUTOFF = 30;
 const WINDOW_BARS = 1440;
 /** Widest gap between the signal close and the fill open accepted. */
 const MAX_SLIPPAGE_BPS = 150;
+// Capital-preservation guard for NEW cycles only (not a stop-loss: an open
+// position is still held through any drop, per the blueprint). If equity
+// ever falls 20% below the race-start equity, the bot stops opening new
+// cycles and only manages what it already holds. The dev tape's max
+// drawdown was 1.58%, so this never triggers there; it exists for a live
+// tape far uglier than anything in the calibration data.
+const EQUITY_DD_HALT_NEW_CYCLES = 0.20;
 
 type Phase = 'IDLE' | 'WAIT_BOTTOM' | 'IN' | 'COOLDOWN';
 
@@ -128,6 +135,7 @@ let dipLow = 0;
 let waitStartBar = -1;
 /** COOLDOWN: the scored bar at which watching resumes. */
 let cooldownUntil = -1;
+let startEquity = 0n;
 
 const closes: number[] = [];
 
@@ -265,6 +273,8 @@ await runBars({
     /* ---------- IDLE: watch, keep the anchor at the high ----------- */
     if (close > anchorPeak) anchorPeak = close;
     if (!canBuy || anchorPeak <= 0) return [];
+    if (startEquity === 0n) startEquity = state.equity;
+    if (startEquity > 0n && state.equity * 100n < startEquity * BigInt(Math.round((1 - EQUITY_DD_HALT_NEW_CYCLES) * 100))) return [];
     const depth = 1 - close / anchorPeak;
     if (depth < RUNG1) return [];
     if (prevClose > anchorPeak * (1 - RUNG1) && depth >= RUNG3) {
