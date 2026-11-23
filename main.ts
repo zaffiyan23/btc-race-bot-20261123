@@ -8,15 +8,19 @@
 //   anchor is the level a dip is measured from, and the level a later
 //   recovery is banked against.
 //
-//   LADDER 30 / 50 / 20. When the close falls to the first rung below
-//   the anchor, the bot buys with 30% of the cycle budget (the equity
-//   it held when the cycle started). If price falls further to the
-//   second rung it buys 50% more, and at the third rung the last 20%.
-//   A cycle can therefore end up fully invested, but only by buying
-//   cheaper and cheaper.
+//   TWO-LEVEL DIRECT ENTRY, 50 / 50 (the previous winner's entry
+//   pattern, adopted by the owner's final decision, 2026-11-23
+//   14:01 WIB). Two dip levels inside the owner's $59,000–$60,500
+//   zone: level 1 at $60,500 and level 2 at $59,000 (depths below
+//   the cycle anchor, mapped from the $61,480 decision price). The
+//   moment the close touches a level, the bot buys DIRECTLY with
+//   50% of the cycle budget — no bounce confirmation, no waiting
+//   (the bounce-confirmation scheme the owner considered the same
+//   afternoon was dropped). Below $59,000 there are no more
+//   entries. A cycle ends up fully invested only by buying cheaper.
 //
 //   CRASH GAP -> WAIT FOR THE BOTTOM. If one bar's close gaps straight
-//   through all three rungs (the previous close was still above rung 1),
+//   through both levels (the previous close was still above level 1),
 //   laddering into a free fall is exactly the falling-knife catch the
 //   owner banned. The bot instead waits: it tracks the low, and only
 //   when the close has bounced off that low and is rising does it buy
@@ -28,9 +32,12 @@
 //
 //   TP1 — SELL 50% AT THE ANCHOR ZONE. When the close recovers to the
 //   anchor zone (within 0.10% under the anchor), half the position is
-//   sold. That banks the dip: the rungs were 1.59–4.03% under the
-//   anchor, so a recovery to the anchor pays roughly that spread on
-//   the half sold, minus costs.
+//   sold. That banks the dip: the levels were 1.59% and 4.03% under
+//   the anchor, so a recovery to the anchor pays roughly that spread
+//   on the half sold, minus costs. (The take-profit package is the
+//   owner's 13:54 WIB rule, unchanged by the 14:01 entry decision:
+//   anchor half first, peak-read half second — NOT the winner's
+//   blind long hold; only the entry pattern was adopted.)
 //
 //   TP2 — PEAK READER FOR THE REST. The remaining half is held for
 //   more. The bot tracks the highest close from the moment the entry
@@ -47,13 +54,12 @@
 // Parameters. Market check before the build (2026-11-23, Binance
 // Vision BTCUSDT): BTC $61,451, +3.85% in 24 h after a dip to
 // $59,026; 1-minute return sd 7.3 bps, 15-minute sd 26.9 bps, mean
-// 1-hour range ~0.96% over the last day. The rung depths were then
-// set by the owner's binding decision (13:53 WIB, BTC $61,480):
-// entries only inside the $59,000–$60,500 dip zone, spread evenly
-// across it — see the ladder constants below for the mapping. The
-// peak-read distance is the owner's $100 (decision 13:54 WIB), an
-// absolute price distance applied to the highest close since the
-// entry filled.
+// 1-hour range ~0.96% over the last day. Entries live only inside
+// the $59,000–$60,500 dip zone (owner's decision 13:53 WIB, BTC
+// $61,480): the two levels are the zone's edges — see the constants
+// below for the mapping. The peak-read distance is the owner's $100
+// (decision 13:54 WIB), an absolute price distance applied to the
+// highest close since the entry filled.
 //
 // All state comes from the bars: no clock, no randomness, no files,
 // no network — two runs over the same window agree byte for byte.
@@ -76,9 +82,28 @@ const SYMBOL = 'CBBTC';
 const RUNG1 = 0.01594;
 const RUNG2 = 0.02814;
 const RUNG3 = 0.04034;
-/** Rung sizes, as % of the cycle budget: 30 / 50 / 20. */
-const RUNG_PCTS: readonly number[] = [30, 50, 20];
-const RUNGS: readonly number[] = [RUNG1, RUNG2, RUNG3];
+
+/* ---- entry style switch — FINAL: owner locked DIRECT2 (decision
+ * 2026-11-23 14:01 WIB): winner entry pattern, own TP package.
+ * (Prepared while the owner decided between styles; earlier note:
+ * the 17:00 WIB decision point moved up to 14:01 WIB) ----
+ * LADDER:  the standing entry — rungs 30/50/20 fill on the way down.
+ * BOUNCE:  style A — price enters the zone, bottoms, and the bot
+ *          buys 100% only once the close has risen $100 off the
+ *          tracked low (bounce confirmation, no fills on the way
+ *          down). Dropped by the 14:01 WIB decision; the question
+ *          of what happens below the zone was answered by the
+ *          two-level construction itself: no entries below $59,000.
+ * DIRECT2: style B — the previous race winner's pattern: direct
+ *          fills at the zone's two levels ($60,500 and $59,000),
+ *          50/50, no confirmation wait, then hold.            */
+const ENTRY_MODE: 'LADDER' | 'BOUNCE' | 'DIRECT2' = 'DIRECT2';
+/** Bounce-confirmation distance in USDC of price (style A). */
+const BOUNCE_USD = 100;
+/** Rung sizes, as % of the cycle budget (30/50/20, or 50/50 in
+ * DIRECT2), and the rung depths of the installed style. */
+let RUNG_PCTS: readonly number[] = ENTRY_MODE === 'DIRECT2' ? [50, 50] : [30, 50, 20];
+let RUNGS: readonly number[] = ENTRY_MODE === 'DIRECT2' ? [RUNG1, RUNG3] : [RUNG1, RUNG2, RUNG3];
 
 /* ---- bottom confirmation (crash-gap path) ---- */
 /** A waited-for bottom counts as confirmed when the close has risen
@@ -115,7 +140,7 @@ const MAX_SLIPPAGE_BPS = 150;
 // tape far uglier than anything in the calibration data.
 const EQUITY_DD_HALT_NEW_CYCLES = 0.20;
 
-type Phase = 'IDLE' | 'WAIT_BOTTOM' | 'IN' | 'COOLDOWN';
+type Phase = 'IDLE' | 'WAIT_BOTTOM' | 'ZONE_WAIT' | 'IN' | 'COOLDOWN';
 
 let phase: Phase = 'IDLE';
 /** Highest close since going idle: the cycle anchor once buying starts. */
@@ -139,6 +164,9 @@ let peakSinceEntry = 0;
  * the wait began. */
 let dipLow = 0;
 let waitStartBar = -1;
+/** ZONE_WAIT (style BOUNCE): the lowest close tracked since the
+ * price entered the dip zone. */
+let zoneLow = 0;
 /** COOLDOWN: the scored bar at which watching resumes. */
 let cooldownUntil = -1;
 let startEquity = 0n;
@@ -166,6 +194,54 @@ function placeBuy(state: BarsState, pctOfBudget: number, close: number, scoredBa
     avgEntry = totalPct > 0 ? (avgEntry * filledPct + close * pctOfBudget) / totalPct : close;
   }
   return [{ side: 'buy', symbol: SYMBOL, notional_quote_units: notional, max_slippage_bps: MAX_SLIPPAGE_BPS }];
+}
+
+/* ==================================================================
+ * ENTRY TRIGGER — the single swap point for how a cycle opens.
+ * Everything else in this bot (ladder adds inside a position, TP1,
+ * the $100 peak reader, cooldown/loop, the no-stop-loss rule) is
+ * independent of which trigger is installed here. To change how the
+ * bot enters, replace this one function and the WAIT_BOTTOM block
+ * that serves its crash-gap path.
+ *
+ * Installed now: the 30/50/20 ladder — rung 1 fills as price crosses
+ * it on the way down. (A bounce-confirmation trigger — price enters
+ * the dip zone, bottoms, and only buys once it has risen $100 off
+ * the low, at 100% size — is being decided by the owner; it slots in
+ * here when confirmed.)
+ * ================================================================== */
+function idleEntry(state: BarsState, close: number, prevClose: number, scoredBar: number, canBuy: boolean): OrderInput[] {
+  if (close > anchorPeak) anchorPeak = close;
+  if (!canBuy || anchorPeak <= 0) return [];
+  if (startEquity === 0n) startEquity = state.equity;
+  if (startEquity > 0n && state.equity * 100n < startEquity * BigInt(Math.round((1 - EQUITY_DD_HALT_NEW_CYCLES) * 100))) return [];
+  const depth = 1 - close / anchorPeak;
+  if (depth < RUNG1) return [];
+  if (ENTRY_MODE === 'BOUNCE') {
+    // Style A: entering the zone only starts the bottom watch —
+    // the buy itself waits for the +$100 bounce in ZONE_WAIT.
+    cycleAnchor = anchorPeak;
+    zoneLow = close;
+    phase = 'ZONE_WAIT';
+    return [];
+  }
+  if (prevClose > anchorPeak * (1 - RUNG1) && depth >= RUNG3) {
+    // One bar gapped from above rung 1 to below rung 3: a crash,
+    // not a dip. Do not ladder into it — wait for the bottom.
+    cycleAnchor = anchorPeak;
+    dipLow = close;
+    waitStartBar = scoredBar;
+    phase = 'WAIT_BOTTOM';
+    return [];
+  }
+  cycleAnchor = anchorPeak;
+  cycleBudget = state.cash;
+  const orders = placeBuy(state, RUNG_PCTS[0], close, scoredBar);
+  if (orders.length > 0) {
+    rungsFilled = 1;
+    phase = 'IN';
+  }
+  return orders;
 }
 
 await runBars({
@@ -220,7 +296,7 @@ await runBars({
           return [];
         }
         // Ladder: deeper rungs buy more, one rung per bar at most.
-        if (canBuy && rungsFilled >= 1 && rungsFilled < 3) {
+        if (canBuy && rungsFilled >= 1 && rungsFilled < RUNGS.length) {
           const nextDepth = RUNGS[rungsFilled];
           if (close <= cycleAnchor * (1 - nextDepth)) {
             const orders = placeBuy(state, RUNG_PCTS[rungsFilled], close, scoredBar);
@@ -240,6 +316,29 @@ await runBars({
       return [];
     }
 
+    /* ---------- ZONE_WAIT: style BOUNCE bottom watch -------------- */
+    if (phase === 'ZONE_WAIT') {
+      if (close < zoneLow) zoneLow = close;
+      if (canBuy && zoneLow > 0 && close >= zoneLow + BOUNCE_USD) {
+        // Bounce confirmed: $100 off the tracked low — buy it all.
+        cycleBudget = state.cash;
+        const orders = placeBuy(state, 100, close, scoredBar);
+        if (orders.length > 0) {
+          rungsFilled = RUNGS.length;
+          phase = 'IN';
+        }
+        return orders;
+      }
+      if (close > cycleAnchor * (1 - RUNG1)) {
+        // Back above the zone without a confirmed bounce we could
+        // buy: the moment has passed, watch again from here.
+        phase = 'IDLE';
+        anchorPeak = close;
+        cycleAnchor = 0;
+      }
+      return [];
+    }
+
     /* ---------- WAIT_BOTTOM: a crash gapped through the ladder ----- */
     if (phase === 'WAIT_BOTTOM') {
       if (close < dipLow) dipLow = close;
@@ -249,7 +348,7 @@ await runBars({
         cycleBudget = state.cash;
         const orders = placeBuy(state, 100, close, scoredBar);
         if (orders.length > 0) {
-          rungsFilled = 3;
+          rungsFilled = RUNGS.length;
           phase = 'IN';
         }
         return orders;
@@ -276,29 +375,7 @@ await runBars({
       return [];
     }
 
-    /* ---------- IDLE: watch, keep the anchor at the high ----------- */
-    if (close > anchorPeak) anchorPeak = close;
-    if (!canBuy || anchorPeak <= 0) return [];
-    if (startEquity === 0n) startEquity = state.equity;
-    if (startEquity > 0n && state.equity * 100n < startEquity * BigInt(Math.round((1 - EQUITY_DD_HALT_NEW_CYCLES) * 100))) return [];
-    const depth = 1 - close / anchorPeak;
-    if (depth < RUNG1) return [];
-    if (prevClose > anchorPeak * (1 - RUNG1) && depth >= RUNG3) {
-      // One bar gapped from above rung 1 to below rung 3: a crash,
-      // not a dip. Do not ladder into it — wait for the bottom.
-      cycleAnchor = anchorPeak;
-      dipLow = close;
-      waitStartBar = scoredBar;
-      phase = 'WAIT_BOTTOM';
-      return [];
-    }
-    cycleAnchor = anchorPeak;
-    cycleBudget = state.cash;
-    const orders = placeBuy(state, RUNG_PCTS[0], close, scoredBar);
-    if (orders.length > 0) {
-      rungsFilled = 1;
-      phase = 'IN';
-    }
-    return orders;
+    /* ---------- IDLE: watch; the entry trigger decides ----------- */
+    return idleEntry(state, close, prevClose, scoredBar, canBuy);
   },
 });
